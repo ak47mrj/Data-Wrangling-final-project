@@ -1,0 +1,325 @@
+---
+title: "Data wrangling final report"
+author: "Fuhuan Li"
+date: "04/29/2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+#Introduction
+Nowadays,with the improvement of people's life, when it comes to food, people will not only care about whether the food can make them full, but also want to get more specific nutrient they want from them. So, more people will even examine the supplement facts before they eat the food. In my project, I get the data from United States Department of Agriculture Food Composition Databases. It lists all the foods with their ingredient and nutrient, My goal is to clean the data and mine some connections or informations from the food with their ingredient and nutrient.
+
+I will scrape the data from the website. The whole dataset contains near 200 thousand samples including numbers, names, nutrients and ingredients.
+
+I will clean the dataset and use the packages in R such as "tidyverse","tidytext" to do the analysis.
+
+#Data Cleaning
+First, we install the packages we need in this project.
+```{r setup,message=FALSE,warning=FALSE}
+library(tidyverse)
+library(jsonlite)
+library(tidytext)
+library(wordcloud)
+```
+
+
+
+We scrape the data from the USDA database.
+
+```{r data_scrape,eval=FALSE}
+options(scipen=999)
+
+api_key <- "****************************"
+
+nutrient_codes_raw <- fromJSON(paste0("https://api.nal.usda.gov/ndb/list?format=json&lt=n&sort=id&api_key=", api_key, "&max=190"))
+
+nutrient_codes_clean <- nutrient_codes_raw$list$item %>%
+  select(2:3)
+
+food_codes_urls <- data.frame(base_url = paste0("https://api.nal.usda.gov/ndb/list?format=json&lt=f&sort=n&api_key=", api_key, "&max=500&offset="), offset = as.character(seq(from = 0, to = 220113, by = 500))) %>%
+  unite(url, base_url, offset, sep = "") 
+
+food_codes_clean <- data.frame(id = NA, name = NA)
+
+
+for (i in 1:nrow(food_codes_urls)) {
+  
+  food_codes_raw <- fromJSON(food_codes_urls[i, ])
+  
+  food_codes_temp <- food_codes_raw$list$item %>%
+    select(2:3)
+  
+  food_codes_clean <- bind_rows(food_codes_clean, food_codes_temp) 
+  
+  
+}
+
+rm(food_codes_temp)
+rm(i)
+rm(food_codes_urls)
+
+
+food_data_urls <- food_codes_clean %>%
+  select(1) %>%
+  rename(code = id) %>%
+  filter(!is.na(code)) %>%
+  mutate(ndbno = "&ndbno=", 
+         index = as.numeric(row.names(.)),
+         group = cut(index, breaks = 230099 / 19.5)) %>% 
+  unite(ndbno_code, ndbno, code, sep = "") %>%
+  group_by(group) %>% 
+  select(1, 3) %>%
+  mutate(ndbno_grouped = paste0(ndbno_code, collapse = "")) %>%
+  ungroup() %>%
+  select(3) %>%
+  distinct() %>%
+  mutate(url = paste0("https://api.nal.usda.gov/ndb/V2/reports?type=f&format=json&api_key=", api_key)) %>%
+  unite(food_data_url, url, ndbno_grouped, sep = "") %>%
+  select(1)
+
+food_data_urls <- as.data.frame(food_data_urls) 
+
+food_ingredients_clean <- data.frame(ndbno = NA, ingredients = NA)
+
+food_nutrients_clean <- data.frame(ndbno = NA, nutrient = NA, value = NA, unit = NA)
+
+for (i in 1:nrow(food_data_urls)) {
+  
+  food_data_raw <- fromJSON(food_data_urls[i, ])
+  print(i)
+  
+  food_iterate <- food_data_raw$foods$food
+  
+  food_data_unpacked_ingredients <- food_data_raw$foods$food$ing
+  
+  if (!is.null(food_data_unpacked_ingredients)) {
+    
+    for (i in 1:nrow(food_data_unpacked_ingredients)) {
+      
+      food_ingredients <- food_data_unpacked_ingredients %>%
+        select(1) %>%
+        mutate(id = as.numeric(row.names(.))) %>%
+        filter(id == i) %>%
+        mutate(ndbno = food_data_raw$foods$food$desc$ndbno[[i]]) %>%
+        select(3, 1) %>%
+        rename(ingredients = desc)
+      
+      food_ingredients_clean <- bind_rows(food_ingredients_clean, food_ingredients)
+      print(i)
+    }
+  }
+  
+  food_data_unpacked_nutrients <- food_data_raw$foods$food$nutrients
+  
+  for (i in 1:nrow(food_iterate)) {
+    
+    if (nrow(food_data_unpacked_nutrients[[i]]) > 0) { 
+      
+      food_nutrients <- food_data_unpacked_nutrients[[i]] %>%
+        select(name, value, unit) %>%
+        mutate(ndbno = food_data_raw$foods$food$desc$ndbno[[i]],
+               value = as.character(value)) %>%
+        rename(nutrient = name)
+      
+      food_nutrients_clean <- bind_rows(food_nutrients_clean, food_nutrients)
+    }
+    print(i)
+  }
+}
+```
+
+It costs a long time near 20 hours to finish scraping. So in the following code, I will load the data I have already scraped.
+
+```{r data_cleaning}
+load("food_codes_clean.RData")
+load("food_ingredients_clean.RData")
+load("food_nutrients_clean.RData")
+
+nutrients <- food_nutrients_clean
+nutrients$value <- as.numeric(nutrients$value)
+nutrients <- nutrients[which(nutrients$value!=0),]
+
+ingredient <- food_ingredients_clean[-1,2]%>%
+  gsub("\\.","",.)%>%
+  gsub("\\(.*?\\)","",.)%>%
+  gsub("CONTAINS:","",.)%>%
+  str_split(.,",",simplify = TRUE)
+
+code <- food_codes_clean[-1,]
+```
+
+#Data Analysis
+##nutrient
+First, let's see the top 10 nutrients that contained in all food.
+
+```{r top10_nutrient}
+nutrients%>%
+  group_by(nutrient)%>%
+  summarise(count = n())%>%
+  arrange(desc(count))%>%
+  head(10)%>%
+  ggplot(aes(reorder(nutrient,count),count,fill = nutrient))+
+  geom_bar(stat = "identity")+geom_text(aes(label = count),vjust = 1.5,colour = "white")+
+  theme(axis.text.x = element_text(angle = 90,size = 12),legend.position = "none")+ggtitle("Top 10 nutrient")+theme(plot.title = element_text(hjust = 0.5))
+```
+
+We can learn from the plot that, "Energy" appears 215127 times in 220501 samples, then the following nutrients are carbohydrate, sodium, sugar, protein, total lipid(fat), iron, caldium, fatty acids, fiber.
+
+Then we try to figure out which food contain more specific nutrient.
+
+```{r specific_nutrient}
+#energy
+energy <- nutrients[which(nutrients$nutrient=="Energy"),]
+newenergy <- 
+  tibble("id"=energy$ndbno,"nutrient"=energy$nutrient,"value"=energy$value,"unit"=energy$unit)
+
+for (i in 1:215127) {
+  if(newenergy$unit[i]=="kJ"){
+    newenergy$value[i] <- newenergy$value[i]*0.239006
+    newenergy$unit[i] <- "kcal"
+  }
+}
+
+newenergy <- newenergy%>%
+  left_join(food_codes_clean,by="id")%>%
+  arrange(desc(value))%>%
+  head(10)
+
+#sugar
+sugar <- nutrients[which(nutrients$nutrient=="Sugars, total"),]
+newsugar <- 
+  tibble("id"=sugar$ndbno,"nutrient"=sugar$nutrient,"value"=sugar$value,"unit"=sugar$unit)
+
+newsugar <- newsugar%>%
+  left_join(food_codes_clean,by="id")%>%
+  arrange(desc(value))%>%
+  head(10)
+
+#protein
+protein <- nutrients[which(nutrients$nutrient=="Protein"),]
+newprotein <- 
+  tibble("id"=protein$ndbno,"nutrient"=protein$nutrient,"value"=protein$value,"unit"=protein$unit)
+
+newprotein <- newprotein%>%
+  left_join(food_codes_clean,by="id")%>%
+  arrange(desc(value))%>%
+  head(10)
+
+#calcium
+calcium <- nutrients[which(nutrients$nutrient=="Calcium, Ca"),]
+newcalcium <- 
+  tibble("id"=calcium$ndbno,"nutrient"=calcium$nutrient,"value"=calcium$value,"unit"=calcium$unit)
+
+newcalcium <- newcalcium%>%
+  left_join(food_codes_clean,by="id")%>%
+  arrange(desc(value))%>%
+  head(10)
+
+newenergy
+
+newsugar
+
+newprotein
+
+newcalcium
+```
+
+We can learn from the result that the food containing more energy are often nuts, chocolate, candy, oil, bread. The food containing more sugar are always candy, juice or some food full of cane sugars. The food containing more protein are often seasonings or eggs. The food containing more calcium are always milk cheese and eggs. Except the protein, all the other three are match the general knowledge we know. As for the reasoning that why the seasonings contain more protein, maybe they contain less quantity but a high proportion. So, when they compare with other items thet we often regard as a high-protein food in same weight, they will have a high content of protein.
+
+Then we can combine two different nutrients, make "energy" and "carbohydrate" as an example
+
+```{r two_nutrients}
+two_nutrient<-nutrients %>%
+  filter(nutrient =="Energy" | nutrient == "Carbohydrate, by difference") %>%
+  filter(unit=="kcal" | unit =="g") %>%
+  select(-unit) %>%
+  spread(key=nutrient,value=value) %>%
+  filter(!is.na(`Carbohydrate, by difference`)) %>%
+  filter(!is.na(Energy)) 
+
+ggplot(two_nutrient,aes(Energy,`Carbohydrate, by difference`)) +
+  geom_point()
+```
+
+We can learn from the plot that the points are concentrating on the left side of the picture, which means the energy is less than 750. In the right side of the picture, the points represent the food containing high energy.
+
+```{r high_energy}
+colnames(two_nutrient)<-c("id","c","e")
+two_nutrient %>%
+  filter(e>1200) %>%
+  filter(c>60) %>%
+  left_join(food_codes_clean,by="id") %>%
+  select(name,c,e)
+
+two_nutrient %>%
+  filter(e>1200) %>%
+  filter(c<60) %>%
+  left_join(food_codes_clean,by="id") %>%
+  select(name,c,e)
+```
+
+The first table shows the food containing high energy and carbohydrate, they are always candy, chocolate, or food made by fine semolina. In the second table, they are two kinds of food, coconuts and cashews, that contain high energy with low content of carbohydrate. They are suitable for those people trapped with diabetes to recover the energy.
+
+##ingredient
+Then we focus on the ingredient.
+
+```{r ingredient}
+
+newingredient <- ingredient%>%
+  as.character()%>%
+  str_trim(side = "both")%>%
+  tibble("ingredient"=.)%>%
+  filter(!is.na(ingredient))%>%
+  filter(ingredient != "")%>%
+  group_by(ingredient)%>%
+  summarize(count = n())%>%
+  arrange(desc(count))
+
+wordcloud(words = newingredient$ingredient,freq = newingredient$count,
+            random.order = FALSE,max.words = 70,rot.per=0.60, 
+            colors=brewer.pal(8, "Dark2"))
+```
+
+We can learn from this plot that, the ingredient with the higher frequency of occurrence are salt, sugar, water, citric acid etc.
+
+##specific kind of food
+In this part, we focus on the juice, to see what kinds of nutrient are contained in them. 
+
+```{r juice}
+juice <- grep("JUICE",code[,2])
+newcode <- code[juice,]
+juicecode <-
+  tibble("ndbno"=newcode$id,"name"=newcode$name)
+
+meannutrient<-nutrients%>%
+  group_by(nutrient)%>%
+  summarize(avemean=mean(value,na.rm=TRUE))
+
+juicecode%>%
+  left_join(nutrients,by="ndbno")%>%
+  group_by(nutrient)%>%
+  summarise(mean=mean(value,na.rm=TRUE))%>%
+  arrange(desc(mean))%>%
+  head(20)
+```
+
+we can learn from the table that juice always contains many kinds of nutrients, some of these are often what we most need such as different kinds of Vitamin or mineral. But when we compare the content of nutrient in juice to the average of the nutrient in all food, the result is a little bit interesting.
+
+```{r juice_compare}
+juicecode%>%
+     left_join(nutrients,by="ndbno")%>%
+     group_by(nutrient)%>%
+     summarise(mean=mean(value,na.rm=TRUE))%>%
+     left_join(meannutrient,by="nutrient")%>%
+     filter(mean>avemean)%>%
+     arrange(desc(mean))
+```
+
+The table shows that just three kinds of nutrient in the juice is higher than the average, they are water, fructose and glucose. This result may tells us we can obtain many kinds of nutrients we want by drinking juice, however, when it comes to a specific nutrient, the content in the juice may not be too much as what we think.
+
+#Conclusion
+In summary, we get the data from USDA, clean the data, and extract the variables we are interested in. We first find top 10 nutrients that are contained in all food. Then we come to some specific nutrients, to find the food with high content of them. Next we combine two different nutrients, in report, we take "energy" and "carbohydrate" as an example. We find foods that contain high energy and high carbohydrate, which can be used for physical recovery. We also get some foods that are with high energy but less carbohydrate. They can be suitable for these people who are trapped with diabetes.
+
+We also take a look at ingredient. The ingredient with a high frequency of occurrence are similar as our first reaction on this problem. Most of them are salt, sugar, water etc.
+
+At last, we concentrate on a specific kind of food. In here, we look into the juice. We extract all the samples that contain "juice" in their name and check out the average of different kinds of nutrient first. The result shows that juice always contain considerable content of the nutrients we  want in our daily life, such as Vitamin and mineral. However, when we compare the contents of these nutrients in juice to the average nutrient contents in all foods, we are surprise to find just three nutrients are above the average. That may draw the conclusion that juice may contain many kinds of nutrient we want, but when it comes to request a specific nutrient, dringking juice is not a good choice.
