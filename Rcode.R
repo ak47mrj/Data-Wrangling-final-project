@@ -128,6 +128,7 @@ code <- food_codes_clean[-1,]
 ###################################
 data analysis
 ###################################
+#find top 10 nutrients in all foods
 nutrients%>%
   group_by(nutrient)%>%
   summarise(count = n())%>%
@@ -137,6 +138,7 @@ nutrients%>%
   geom_bar(stat = "identity")+geom_text(aes(label = count),vjust = 1.5,colour = "white")+
   theme(axis.text.x = element_text(angle = 90,size = 12),legend.position = "none")+ggtitle("Top 10 nutrient")+theme(plot.title = element_text(hjust = 0.5))
 
+#top 10 foods that contain specific energy
 #energy
 energy <- nutrients[which(nutrients$nutrient=="Energy"),]
 newenergy <- 
@@ -192,6 +194,7 @@ newprotein
 
 newcalcium
 
+#combine two different nutrients
 two_nutrient<-nutrients %>%
   filter(nutrient =="Energy" | nutrient == "Carbohydrate, by difference") %>%
   filter(unit=="kcal" | unit =="g") %>%
@@ -216,6 +219,7 @@ two_nutrient %>%
   left_join(food_codes_clean,by="id") %>%
   select(name,c,e)
   
+#top 10 ingredient in all foods
   newingredient <- ingredient%>%
   as.character()%>%
   str_trim(side = "both")%>%
@@ -230,6 +234,7 @@ wordcloud(words = newingredient$ingredient,freq = newingredient$count,
             random.order = FALSE,max.words = 70,rot.per=0.60, 
             colors=brewer.pal(8, "Dark2"))
 
+#specific analysis on juice
 juice <- grep("JUICE",code[,2])
 newcode <- code[juice,]
 juicecode <-
